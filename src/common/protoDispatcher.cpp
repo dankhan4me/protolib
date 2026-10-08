@@ -935,7 +935,7 @@ int ProtoDispatcher::Run(bool oneShot)
       
     // TBD - should we keep "run" true while in the do loop so "IsRunning()" 
     //       can be interpreted properly (or just deprecate IsRunning() ???
-    run.store(!oneShot, std::memory_order_release);
+    run = oneShot ? false : true;
     do
     { 
         if (IsPending())
@@ -976,14 +976,13 @@ int ProtoDispatcher::Run(bool oneShot)
                     continue;
                 }
                 else */
-                Controller* theController = controller.load(std::memory_order_acquire);
-                if (NULL != theController)
+                if (NULL != controller)
                 {
                     // Relinquish to controller thread
                     // Note this assumes the controller thread is the _only_
                     // other thread vying for control of this dispatcher thread
                     Unlock(suspend_mutex);
-                    theController->DoDispatch();
+                    controller->DoDispatch();
                     Lock(suspend_mutex);   
                 }
                 else
@@ -1003,7 +1002,7 @@ int ProtoDispatcher::Run(bool oneShot)
             PLOG(PL_DEBUG, "ProtoDispatcher::Run() would be stuck with infinite timeout & no inputs!\n");
             break;
         }
-    }  while (run.load(std::memory_order_acquire));
+    }  while (run);
 #ifdef USE_TIMERFD
     // Note if USE_EPOLL, closing the "timer_fd" automatically deletes the event
     close(timer_stream.GetDescriptor());
@@ -1028,14 +1027,14 @@ int ProtoDispatcher::Run(bool oneShot)
 
 void ProtoDispatcher::Stop(int exitCode)
 {
-    Controller* theController = controller.load(std::memory_order_acquire);
-    if (theController)
+    if (controller)
     {
-        theController->OnThreadStop();
+        controller->OnThreadStop();
+        controller = NULL;
     }
     SignalThread();
-    exit_code = run.load(std::memory_order_acquire) ? exitCode : exit_code;
-    run.store(false, std::memory_order_release);
+    exit_code = run ? exitCode : exit_code;
+    run = false;
 #ifdef WIN32
     if (msg_window)
         PostMessage(msg_window, WM_DESTROY, 0, 0);
@@ -1057,8 +1056,7 @@ void* ProtoDispatcher::DoThreadStart(void* param)
 {
     ProtoDispatcher* dp = reinterpret_cast<ProtoDispatcher*>(param);
     ASSERT(NULL != dp);
-    Controller* theController = dp->controller.load(std::memory_order_acquire);
-    if (NULL != theController) Lock(theController->lock_b);
+    if (NULL != dp->controller) Lock(dp->controller->lock_b);
     Lock(dp->suspend_mutex);
     dp->thread_started = true;
     dp->exit_status = dp->Run();  // TBD - should have Run() set exit_status internally instead???
@@ -1083,7 +1081,7 @@ bool ProtoDispatcher::StartThread(bool                         priorityBoost,
         PLOG(PL_ERROR, "ProtoDispatcher::StartThread() error: InstallBreak() failed\n");
         return false;
     }
-    controller.store(theController, std::memory_order_release);
+    controller = theController;
     Init(suspend_mutex);
     Init(signal_mutex);
     Lock(suspend_mutex);
@@ -1105,7 +1103,7 @@ bool ProtoDispatcher::StartThread(bool                         priorityBoost,
             RemoveBreak();
             Unlock(suspend_mutex);  // will be relocked by DoThreadStart()
             thread_id = (ThreadId)NULL;
-            controller.store(NULL, std::memory_order_release);
+            controller = NULL;
             return false;
         }
         external_thread = false;
@@ -1279,7 +1277,7 @@ void ProtoDispatcher::DestroyThread()
         }
 		// Do not clear the controller until the worker has exited.  Run()
         // may still read and invoke it while pthread_join() is pending.
-        controller.store(NULL, std::memory_order_release);
+        controller = NULL;
         thread_started = false;
         thread_id = (ThreadId)NULL;
         external_thread = false;
@@ -2689,7 +2687,7 @@ void ProtoDispatcher::Dispatch()
                     else
                     {
                         exit_code = msg.wParam;
-                        run.store(false, std::memory_order_release);
+                        run = false;
                         break;  // we're done
                     }
                 }
@@ -2726,7 +2724,7 @@ LRESULT CALLBACK ProtoDispatcher::MessageHandler(HWND hwnd, UINT message, WPARAM
         case WM_QUIT:
         {
             ProtoDispatcher* dp = (ProtoDispatcher*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-            dp->run.store(false, std::memory_order_release);
+            dp->run = false;
             return 0;
         }
         default:
