@@ -39,6 +39,8 @@
 #include "protoEvent.h"
 #include "protoQueue.h"    // for keeping track of our "streams" (channels, sockets, generic)
 
+#include <atomic>
+
 #ifdef WIN32
 
 #ifndef _WIN32_WCE
